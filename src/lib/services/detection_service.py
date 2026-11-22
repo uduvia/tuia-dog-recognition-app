@@ -8,6 +8,7 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+from lib.preprocessing import preprocess_bgr
 from lib.schemas import ClassifyResult, DetectResult, DogDetection
 from lib.services.classifier_service import ClassifierService
 
@@ -75,7 +76,33 @@ class DetectionService:
 
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        model = self._get_yolo()
+        # ultralytics asume BGR cuando recibe un np.ndarray (igual que cv2.imread).
+        results = model.predict(
+            image,
+            conf=self.conf_threshold,
+            classes=[self.dog_class_id],
+            verbose=False,
+        )
+        height, width = image.shape[:2]
+        detections: list[tuple[tuple[int, int, int, int], float]] = []
+        for box in results[0].boxes:
+            x1, y1, x2, y2 = (int(round(v)) for v in box.xyxy[0].tolist())
+            x1, y1, x2, y2 = self._clip_xyxy(x1, y1, x2, y2, height, width)
+            detections.append(((x1, y1, x2, y2), float(box.conf[0])))
+        detections.sort(key=lambda d: d[1], reverse=True)
+        return detections
+
+    def _get_yolo(self):
+        """Carga YOLO una sola vez (los pesos se descargan en el primer uso)."""
+        model = getattr(self, "_yolo", None)
+        if model is None:
+            from ultralytics import YOLO  # import lazy
+
+            model = YOLO(self.yolo_model_name)
+            self._yolo = model
+            logger.info("YOLO cargado: %s", self.yolo_model_name)
+        return model
 
     def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
         """
@@ -84,7 +111,35 @@ class DetectionService:
 
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        import torch  # import lazy
+
+        model = self.classifier.load_model()
+        tensor = preprocess_bgr(crop, self.classifier.image_size)[None, ...]  # 1xCxHxW float32
+
+        if hasattr(model, "run"):  # onnxruntime.InferenceSession
+            input_name = model.get_inputs()[0].name
+            logits = np.asarray(model.run(None, {input_name: tensor})[0])[0]
+            class_names = self._onnx_class_names(model)
+        else:  # modelo PyTorch completo (.pth)
+            model.eval()
+            with torch.no_grad():
+                logits = model(torch.from_numpy(tensor))[0].cpu().numpy()
+            class_names = list(getattr(model, "class_names", []))
+
+        if not class_names:
+            raise ValueError(
+                "El modelo no trae la lista de razas (atributo 'class_names' o metadata ONNX 'class_names')"
+            )
+        # softmax estable
+        exp = np.exp(logits - np.max(logits))
+        probs = exp / exp.sum()
+        idx = int(np.argmax(probs))
+        return str(class_names[idx]), float(probs[idx])
+
+    @staticmethod
+    def _onnx_class_names(session) -> list[str]:
+        raw = session.get_modelmeta().custom_metadata_map.get("class_names", "")
+        return json.loads(raw) if raw else []
 
     # ------------------------------------------------------------------
     # Orquestacion provista
