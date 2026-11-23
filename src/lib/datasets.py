@@ -33,7 +33,7 @@ def list_samples(
     for name in class_names:
         folder = Path(split_dir) / name
         if not folder.is_dir():
-            continue
+            raise FileNotFoundError(f"Falta la carpeta de la raza '{name}' en {split_dir}")
         files = sorted(p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS)
         if max_per_class is not None and len(files) > max_per_class:
             files = rng.sample(files, max_per_class)
@@ -74,3 +74,25 @@ class BreedDataset:
         if self.transform is not None:
             image = self.transform(image)
         return preprocess_bgr(image, self.image_size), label
+
+def fix_folder_names(dataset_root: Path) -> list[tuple[str, str]]:
+    """Normaliza espacios repetidos en las carpetas de raza (ej. 'American  Spaniel' -> 'American Spaniel').
+
+    Es idempotente: si no hay nada que corregir, no hace nada. Devuelve los renombrados.
+    """
+    changed: list[tuple[str, str]] = []
+    for split in ("train", "valid", "test"):
+        base = Path(dataset_root) / split
+        if not base.is_dir():
+            continue
+        for d in sorted(base.iterdir()):
+            if not d.is_dir():
+                continue
+            clean = " ".join(d.name.split())
+            if clean != d.name:
+                target = d.with_name(clean)
+                if target.exists():
+                    raise FileExistsError(f"No se puede renombrar {d.name!r}: ya existe {clean!r}")
+                d.rename(target)
+                changed.append((str(d), str(target)))
+    return changed
