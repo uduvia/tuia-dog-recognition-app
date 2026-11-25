@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     image_size: int = os.getenv("IMAGE_SIZE", 224)
     embedding_dim: int = os.getenv("EMBEDDING_DIM", 512)
 
+    # Clasificador activo por defecto (conectar en bootstrap; ver integracion/README).
+    classifier_model: str = "resnet18_finetuned"
+
+    # Hiperparámetros de entrenamiento (Etapa 2)
+    train_epochs: int = 15
+    train_batch_size: int = 32
+    train_lr: float = 1e-3
+    backbone_lr: float = 1e-4
+    train_weight_decay: float = 1e-4
+    train_patience: int = 4
+    resnet_strategy: str = "finetune"
+    cnn_dropout: float = 0.3
+
     # Configuracion de YOLO (Etapa 3)
     yolo_model: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
     yolo_conf_threshold: float = os.getenv("YOLO_CONF_THRESHOLD", 0.25)

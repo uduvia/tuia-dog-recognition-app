@@ -42,12 +42,23 @@ def list_samples(
 
 
 def basic_augment(image: np.ndarray) -> np.ndarray:
-    """Augmentation minima sobre BGR (provisoria; la definitiva se justifica en la notebook 1)."""
+    """Augmentation leve sobre BGR uint8; solo para entrenamiento."""
     if random.random() < 0.5:
-        image = cv2.flip(image, 1)  # flip horizontal
-    alpha = random.uniform(0.8, 1.2)  # contraste
-    beta = random.uniform(-20, 20)  # brillo
-    return cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+        image = cv2.flip(image, 1)
+    if random.random() < 0.5:
+        h, w = image.shape[:2]
+        matriz = cv2.getRotationMatrix2D((w / 2, h / 2), random.uniform(-12, 12), 1.0)
+        image = cv2.warpAffine(image, matriz, (w, h), borderMode=cv2.BORDER_REFLECT_101)
+    if random.random() < 0.5:
+        alpha = random.uniform(0.85, 1.15)
+        beta = random.uniform(-20, 20)
+        image = np.clip(image.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
+    if random.random() < 0.2:
+        image = cv2.GaussianBlur(image, (3, 3), random.uniform(0.1, 1.2))
+    if random.random() < 0.2:
+        ruido = np.random.normal(0, 6, image.shape)
+        image = np.clip(image.astype(np.float32) + ruido, 0, 255).astype(np.uint8)
+    return image
 
 
 class BreedDataset:
