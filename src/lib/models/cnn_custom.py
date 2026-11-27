@@ -18,5 +18,8 @@ class CNNCustom(nn.Module):
         self.classifier = nn.Linear(embedding_dim, num_clases)
     def forward_features(self, x):
         return self.embedding(self.pool(self.features(x)).flatten(1))
+    def embed(self, x):
+        return self.forward_features(x)
+
     def forward(self, x):
         return self.classifier(self.dropout(self.forward_features(x)))

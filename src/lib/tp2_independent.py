@@ -11,18 +11,24 @@ def revisar_independiente(data, folder, classes):
     if not (folder/'metadata.csv').is_file():
         return pd.DataFrame(columns=COLS), pd.DataFrame([{'alerta':'Falta metadata.csv'}])
     meta = pd.read_csv(folder/'metadata.csv',dtype=str,keep_default_na=False)
-    required = {'seleccionada','carpeta','ruta_local','pagina_original','licencia'}
+    label_column = 'carpeta' if 'carpeta' in meta.columns else 'raza'
+    required = {'seleccionada',label_column,'ruta_local','pagina_original','licencia'}
     if not required <= set(meta.columns):
         raise ValueError(f'Faltan columnas: {required-set(meta.columns)}')
     rows, alerts = [], []
     seen = set()
     for r in meta.to_dict('records'):
         if r['seleccionada'].strip().upper() not in ('SI','SÍ','TRUE','1'): continue
-        breed=r['carpeta']; filename=Path(r['ruta_local'].replace('\\','/')).name
-        # La ruta del CSV anterior conserva independent/ aunque se haya renombrado el directorio.
-        p=(folder/breed/filename).resolve()
-        if breed not in classes or not p.is_relative_to(folder) or not p.is_relative_to(data):
-            alerts.append({'path':str(p),'alerta':'Etiqueta o ruta inválida'}); continue
+        source_label = r[label_column].strip()
+        breed = 'Yorkie' if source_label == 'Yorkshire Terrier' and 'Yorkie' in classes else source_label
+        filename = Path(r['ruta_local'].replace(chr(92), '/')).name
+        image_root = folder / 'imagenes' if (folder / 'imagenes').is_dir() else folder
+        p = (image_root / source_label / filename).resolve()
+        if not p.is_relative_to(folder) or not p.is_relative_to(data):
+            alerts.append({'path':str(p),'alerta':'Ruta inválida'}); continue
+        if breed not in classes:
+            seen.add(p)
+            alerts.append({'path':str(p),'alerta':f'Raza fuera del clasificador: {source_label}'}); continue
         if p in seen:
             alerts.append({'path':str(p),'alerta':'Ruta repetida'}); continue
         if not p.is_file() or cv2.imread(str(p)) is None:
@@ -41,8 +47,14 @@ def revisar_independiente(data, folder, classes):
 def dhash(path):
     g=cv2.imread(str(path),cv2.IMREAD_GRAYSCALE)
     if g is None: raise ValueError(f'Imagen ilegible: {path}')
-    g=cv2.resize(g,(9,8),interpolation=cv2.INTER_AREA)
-    return int.from_bytes(np.packbits((g[:,1:]>g[:,:-1]).ravel()).tobytes(),'big')
+    return dhash_gray(g)
+
+
+def dhash_gray(gray):
+    small = cv2.resize(gray, (9, 8), interpolation=cv2.INTER_AREA)
+    bits = small[:, 1:] > small[:, :-1]
+    return int.from_bytes(np.packbits(bits.ravel()).tobytes(), 'big')
+
 
 def filtrar_independiente(data, main, ind, hash_dist=4):
     data=Path(data).resolve()

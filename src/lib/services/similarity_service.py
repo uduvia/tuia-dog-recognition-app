@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import json
 import logging
 from pathlib import Path
@@ -16,17 +17,19 @@ from lib.storage.base import EmbeddingStoreProtocol
 logger = logging.getLogger(__name__)
 
 
+def votar(razas, scores, threshold):
+    if not len(scores): return 'unknown',0.
+    votos = Counter()
+    cantidades = Counter()
+    for raza, score in zip(razas, scores):
+        votos[raza] += float(score)
+        cantidades[raza] += 1
+    raza = max(votos, key=votos.get)  # empate: primer vecino de las razas empatadas
+    score = votos[raza] / cantidades[raza]
+    return (raza if max(scores) >= threshold else 'unknown'), float(score)
+
 class SimilarityService:
-    """Etapa 1: buscador de imagenes por similitud.
-
-    Funciones a implementar por el estudiante:
-      - extract_embedding(image)
-      - search_similar_images(embedding, top_k)
-      - predict_breed_from_neighbors(results)
-
-    La orquestacion (search, index_image, persistencia y metricas de similitud)
-    ya esta provista y no debe modificarse sin justificarlo en el Pull Request.
-    """
+    """Búsqueda por similitud sobre la galería de entrenamiento."""
 
     def __init__(
         self,
@@ -58,7 +61,7 @@ class SimilarityService:
         return image
 
     # ------------------------------------------------------------------
-    # Etapa 1: funciones a implementar
+    # Etapa 1: extracción, búsqueda y voto
     # ------------------------------------------------------------------
 
     def extract_embedding(self, image: np.ndarray) -> list[float]:
@@ -95,7 +98,7 @@ class SimilarityService:
             logger.info("Baseline ResNet18 (ImageNet) cargada para embeddings")
         return model
 
-    def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
+    def search_similar_images(self, embedding: list[float], top_k: int, model_name: str | None = None) -> list[Neighbor]:
         """
         Recupera de la base vectorial las top_k imagenes mas similares.
 
@@ -112,6 +115,9 @@ class SimilarityService:
             records = self.store.search(embedding, top_k)
         else:
             records = self.store.all()
+        expected = model_name or self.model_name
+        if any(r.metadata.get("model", "baseline") != expected for r in records):
+            raise ValueError(f"La galería corresponde a otro extractor. Reindexar con {expected}.")
         neighbors = [
             Neighbor(path=r.path, breed=r.breed, score=self.similarity(embedding, r.embedding))
             for r in records
@@ -127,21 +133,7 @@ class SimilarityService:
         Si el mejor score esta por debajo de self.similarity_threshold se
         considera "unknown". Retorna (raza, score).
         """
-        if not results:
-            return "unknown", 0.0
-        # Voto ponderado por score: cada vecino suma su similitud a su raza.
-        votes: dict[str, float] = {}
-        scores_by_breed: dict[str, list[float]] = {}
-        for n in results:
-            votes[n.breed] = votes.get(n.breed, 0.0) + n.score
-            scores_by_breed.setdefault(n.breed, []).append(n.score)
-        # Desempate: mayor voto; si empatan, el de mayor score individual.
-        breed = max(votes, key=lambda b: (votes[b], max(scores_by_breed[b])))
-        # Score devuelto: similitud media de los vecinos de la raza ganadora.
-        score = float(np.mean(scores_by_breed[breed]))
-        if score < self.similarity_threshold:
-            return "unknown", score
-        return breed, score
+        return votar([n.breed for n in results], [n.score for n in results], self.similarity_threshold)
 
     # ------------------------------------------------------------------
     # Helpers de similitud provistos
@@ -188,7 +180,7 @@ class SimilarityService:
             return path
         return candidate
 
-    def index_image(
+    def image_record(
         self, image_path: str, breed: str, metadata: dict[str, object] | None = None
     ) -> EmbeddingRecord:
         """Extrae el embedding de una imagen del dataset y lo persiste en la base vectorial.
@@ -198,13 +190,15 @@ class SimilarityService:
         """
         image = self._load_image(image_path)
         embedding = self.extract_embedding(image)
-        record = EmbeddingRecord(
+        return EmbeddingRecord(
             id_imagen=str(uuid4()),
             embedding=embedding,
             path=self._to_stored_path(image_path),
             breed=breed,
             metadata=metadata or {},
         )
+    def index_image(self, image_path: str, breed: str, metadata: dict[str, object] | None = None) -> EmbeddingRecord:
+        record = self.image_record(image_path, breed, metadata)
         self.store.append(record)
         return record
 
@@ -232,7 +226,7 @@ class SimilarityService:
         embedding = extractor(image)
 
         k = int(top_k) if top_k else self.top_k
-        neighbors = [self._with_url(n) for n in self.search_similar_images(embedding, k)]
+        neighbors = [self._with_url(n) for n in self.search_similar_images(embedding, k, model_name)]
         breed, score = self.predict_breed_from_neighbors(neighbors)
         logger.info("Predicted breed: %s (score=%.4f) for %s", breed, score, source_path)
 

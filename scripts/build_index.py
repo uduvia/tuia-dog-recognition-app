@@ -35,7 +35,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--split", default="train", help="Subcarpeta del dataset a indexar (train/valid/test)."
+        "--split", default="train", choices=["train"], help="Galería del manifiesto final."
     )
     parser.add_argument(
         "--limit", type=int, default=0, help="Maximo de imagenes por raza (0 = todas)."
@@ -56,28 +56,24 @@ def main() -> None:
         extractor = classifier.extract_custom_embedding
     similarity.extract_embedding = extractor  # type: ignore[method-assign]
 
-    root = settings.dataset_path / args.split
-    if not root.is_dir():
-        sys.exit(f"No existe {root}. Descarga el dataset con scripts/download_dataset.py")
+    from collections import Counter
+    from lib.tp2_data import rutas_galeria
 
-    total = 0
-    for breed_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        count = 0
-        for image_path in sorted(breed_dir.iterdir()):
-            if image_path.suffix.lower() not in IMAGE_SUFFIXES:
+    counts = Counter()
+    def records():
+        for path, breed in rutas_galeria(settings.dataset_path):
+            if args.limit and counts[breed] >= args.limit:
                 continue
-            if args.limit and count >= args.limit:
-                break
-            similarity.index_image(
-                str(image_path),
-                breed_dir.name,
-                {"split": args.split, "model": settings.embedding_model},
-            )
-            count += 1
-            total += 1
-        print(f"{breed_dir.name}: {count} imagenes indexadas")
+            record = similarity.image_record(str(path), breed, {"split": "train", "model": settings.embedding_model})
+            if len(record.embedding) != settings.embedding_dim:
+                raise ValueError("La dimensión del extractor difiere de EMBEDDING_DIM")
+            counts[breed] += 1
+            yield record
 
-    print(f"Total: {total} embeddings almacenados (modelo: {settings.embedding_model})")
+    if args.limit < 0:
+        parser.error("--limit debe ser mayor o igual a cero")
+    store.replace(records())
+    print(f"Galería: {sum(counts.values())} imágenes, {len(counts)} razas, modelo {settings.embedding_model}")
 
 
 if __name__ == "__main__":

@@ -6,11 +6,14 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=secret,id=pip_ca \
+    if [ -f /run/secrets/pip_ca ]; then export PIP_CERT=/run/secrets/pip_ca; fi && \
+    apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libgl1 \
     libglib2.0-0 \
     && pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.11.0 torchvision==0.26.0 && \
     pip install --no-cache-dir -r /app/requirements.txt \
     && apt-get purge -y build-essential \
     && apt-get autoremove -y \
