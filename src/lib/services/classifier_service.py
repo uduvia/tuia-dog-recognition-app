@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import random
+import pandas as pd
 from pathlib import Path
 from typing import Any
 
@@ -35,16 +35,7 @@ DEFAULT_TRAIN_CONFIG: dict[str, Any] = {
 
 
 class ClassifierService:
-    """Etapa 2: entrenamiento y comparacion de modelos de clasificacion.
-
-    Funciones a implementar por el estudiante:
-      - train_classifier()
-      - evaluate_classifier()
-      - extract_custom_embedding(image)
-
-    La carga de checkpoints (.pth / .onnx) y la seleccion del modelo activo
-    ya estan provistas.
-    """
+    """Entrenamiento, evaluación y carga de clasificadores de razas."""
 
     def __init__(
         self,
@@ -60,6 +51,8 @@ class ClassifierService:
         self.dataset_path = dataset_path
         self.output_path = output_path
         self.active_model_name = active_model
+        self.train_config = {}
+        self.embedding_dim = 512
         self._loaded: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
@@ -103,7 +96,7 @@ class ClassifierService:
         return model
 
     # ------------------------------------------------------------------
-    # Etapa 2: funciones a implementar
+    # Etapa 2: métodos del servicio
     # ------------------------------------------------------------------
 
     def train_classifier(self) -> None:
@@ -119,50 +112,55 @@ class ClassifierService:
           - Guardar el checkpoint resultante en self.active_checkpoint
             (ej: models/resnet18_finetuned.pth).
         """
-        import torch
         import torch.nn as nn
         from torch.utils.data import DataLoader
 
-        from lib.datasets import BreedDataset, basic_augment, list_class_names, list_samples
+        from lib.tp2_data import cargar_splits, dataset_filas, fijar_semilla
         from lib.models.resnet_classifier import BreedResNet
+        from lib.models.cnn_custom import CNNCustom
 
         cfg = self._train_cfg()
-        self._seed_everything(cfg["seed"])
-        if self.active_model_name != "resnet18_finetuned":
-            raise ValueError(
-                f"train_classifier aun no soporta '{self.active_model_name}' (la CNN propia se agrega en la Fase 4)"
-            )
+        fijar_semilla(cfg["seed"])
+        rows = cargar_splits(self.dataset_path)
+        class_names = sorted(rows.loc[rows.split == "train", "breed"].unique())
 
-        class_names = list_class_names(self.dataset_path / "train")
-        limit = cfg["max_images_per_class"]
-        train_samples = list_samples(self.dataset_path / "train", class_names, limit, cfg["seed"])
-        val_samples = list_samples(self.dataset_path / "valid", class_names, limit, cfg["seed"])
-        logger.info("Clases=%d train=%d valid=%d", len(class_names), len(train_samples), len(val_samples))
+        def loader(split):
+            subset = rows[rows.split == split]
+            if cfg["max_images_per_class"] is not None:
+                subset = subset.sample(frac=1, random_state=cfg["seed"]).groupby("breed").head(cfg["max_images_per_class"])
+            dataset = dataset_filas(self.dataset_path, subset, class_names, self.image_size, split == "train")
+            return DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=split == "train",
+                              num_workers=cfg["num_workers"])
 
+        train_loader, val_loader = loader("train"), loader("valid")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        loader_kw = dict(num_workers=cfg["num_workers"], pin_memory=device.type == "cuda")
-        train_loader = DataLoader(
-            BreedDataset(train_samples, self.image_size, transform=basic_augment),
-            batch_size=cfg["batch_size"], shuffle=True, drop_last=True, **loader_kw,
-        )
-        val_loader = DataLoader(
-            BreedDataset(val_samples, self.image_size), batch_size=cfg["batch_size"], shuffle=False, **loader_kw
-        )
+        frozen = False
+        if self.active_model_name == "cnn_custom":
+            model = CNNCustom(len(class_names), self.embedding_dim, cfg["dropout"])
+            model.class_names = class_names
+            groups = [{"params": model.parameters(), "lr": cfg["lr_head"]}]
+        elif self.active_model_name == "resnet18_finetuned":
+            model = BreedResNet(len(class_names), class_names, pretrained=True, dropout=cfg["dropout"])
+            if model.embedding_dim != self.embedding_dim:
+                raise ValueError("ResNet18 requiere EMBEDDING_DIM=512")
+            frozen = cfg["strategy"] == "frozen"
+        else:
+            raise ValueError(f"Modelo desconocido: {self.active_model_name}")
 
-        model = BreedResNet(len(class_names), class_names, pretrained=True, dropout=cfg["dropout"]).to(device)
-        frozen = cfg["strategy"] == "frozen"
         if frozen:
             for p in model.backbone.parameters():
                 p.requires_grad = False
             groups = [{"params": model.classifier.parameters(), "lr": cfg["lr_head"]}]
-        elif cfg["strategy"] == "full":
+        elif self.active_model_name == "resnet18_finetuned" and cfg["strategy"] == "full":
             groups = [
                 {"params": model.backbone.parameters(), "lr": cfg["lr_backbone"]},
                 {"params": model.classifier.parameters(), "lr": cfg["lr_head"]},
             ]
-        else:
+        elif self.active_model_name == "resnet18_finetuned":
             raise ValueError(f"strategy invalida: {cfg['strategy']}")
 
+        model.image_size = self.image_size
+        model.to(device)
         optimizer = torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg["epochs"])
         criterion = nn.CrossEntropyLoss(label_smoothing=cfg["label_smoothing"])
@@ -228,15 +226,10 @@ class ClassifierService:
         logger.info("Checkpoint guardado en %s (best val_acc=%.4f)", self.active_checkpoint, best_acc)
 
     def _train_cfg(self) -> dict[str, Any]:
-        return {**DEFAULT_TRAIN_CONFIG, **getattr(self, "train_config", {})}
-
-    @staticmethod
-    def _seed_everything(seed: int) -> None:
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+        defaults = DEFAULT_TRAIN_CONFIG.copy()
+        if self.active_model_name == "cnn_custom":
+            defaults["dropout"] = getattr(self, "cnn_dropout", 0.3)
+        return {**defaults, **getattr(self, "train_config", {})}
 
     def _run_logits(self, model: Any, batch: np.ndarray) -> np.ndarray:
         """Logits (N, C) de un batch NCHW float32 para modelos .pth y .onnx."""
@@ -246,7 +239,7 @@ class ClassifierService:
         with torch.no_grad():
             return model(torch.from_numpy(batch)).cpu().numpy()
 
-    def evaluate_classifier(self) -> dict[str, float]:
+    def evaluate_classifier(self, split: str = "test") -> dict[str, float]:
         """
         Evalua el modelo activo sobre el conjunto de prueba.
 
@@ -258,7 +251,7 @@ class ClassifierService:
           {"accuracy": 0.91, "precision": 0.90, "recall": 0.89,
            "specificity": 0.99, "f1": 0.90}
         """
-        from lib.datasets import BreedDataset, list_samples
+        from lib.tp2_data import cargar_splits, dataset_filas
 
         model = self.load_model()
         if hasattr(model, "run"):
@@ -269,15 +262,19 @@ class ClassifierService:
         if not class_names:
             raise ValueError("El modelo no trae la lista de razas (class_names)")
 
-        samples = list_samples(self.dataset_path / "test", class_names)
-        dataset = BreedDataset(samples, self.image_size)
-        y_true, y_pred = [], []
-        batch_size = 32
+        rows = cargar_splits(self.dataset_path)
+        dataset = dataset_filas(self.dataset_path, rows[rows.split == split], class_names, self.image_size)
+        y_true, y_pred, scores = [], [], []
+        batch_size = self._train_cfg()["batch_size"]
         for start in range(0, len(dataset), batch_size):
             items = [dataset[i] for i in range(start, min(start + batch_size, len(dataset)))]
-            batch = np.stack([x for x, _ in items]).astype(np.float32)
+            batch = np.stack([x for x, _ in items])
+            logits = self._run_logits(model, batch)
+            probs = torch.from_numpy(logits).softmax(1)
+            confidence, labels = probs.max(1)
             y_true.extend(label for _, label in items)
-            y_pred.extend(self._run_logits(model, batch).argmax(1).tolist())
+            y_pred.extend(labels.tolist())
+            scores.extend(confidence.tolist())
 
         n = len(class_names)
         cm = np.zeros((n, n), dtype=np.int64)  # filas: real, columnas: predicho
@@ -296,15 +293,16 @@ class ClassifierService:
             pr, rc, f1 = precision_recall_f1(tp, fp, fn)
             precisions.append(pr); recalls.append(rc); f1s.append(f1)
             specs.append(specificity(tn, fp))
+        table = pd.DataFrame(dict(breed=class_names, support=cm.sum(1), precision=precisions,
+                                  recall=recalls, f1=f1s, specificity=specs))
+        self.last_eval["table"] = table
+        self.last_eval["predictions"] = pd.DataFrame(dict(path=dataset.filas.path, real=y_true, pred=y_pred, score=scores))
         return {
-            "accuracy": float(np.trace(cm) / max(total, 1)),
-            "precision": float(np.mean(precisions)),
-            "recall": float(np.mean(recalls)),
-            "specificity": float(np.mean(specs)),
-            "f1": float(np.mean(f1s)),
+            "accuracy": float(np.trace(cm) / total),
+            **table.loc[table.support > 0, ["precision", "recall", "specificity", "f1"]].mean().to_dict(),
         }
 
-    def extract_custom_embedding(self, image: np.ndarray) -> list[float]:
+    def extract_custom_embedding(self, image: np.ndarray, model_name: str | None = None) -> list[float]:
         """
         Genera el embedding de una imagen usando el modelo propio activo
         (penultima capa del ResNet18 fine-tuned o de la CNN custom).
@@ -314,7 +312,7 @@ class ClassifierService:
         La imagen llega en BGR (OpenCV). Retorna una lista de floats de
         dimension EMBEDDING_DIM.
         """
-        model = self.load_model()
+        model = self.load_model(model_name)
         tensor = preprocess_bgr(image, self.image_size)[None, ...]
         if hasattr(model, "run"):
             # Convencion ONNX: salidas = [logits, embedding]

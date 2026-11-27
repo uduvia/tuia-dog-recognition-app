@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from typing import Iterable
 from pathlib import Path
 
 from lib.schemas import EmbeddingRecord
@@ -29,3 +32,19 @@ class EmbeddingStore:
         records = self.all()
         records.append(record)
         self.save(records)
+
+    def replace(self, records: Iterable[EmbeddingRecord]) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", dir=self.storage_path.parent, encoding="utf-8",
+                                         delete=False) as stream:
+            temp_path = Path(stream.name)
+        try:
+            with temp_path.open("w", encoding="utf-8") as stream:
+                stream.write("[")
+                for i, record in enumerate(records):
+                    if i:
+                        stream.write(",")
+                    stream.write(record.model_dump_json())
+                stream.write("]")
+            os.replace(temp_path, self.storage_path)
+        finally:
+            temp_path.unlink(missing_ok=True)

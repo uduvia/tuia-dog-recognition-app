@@ -56,3 +56,29 @@ def test_predict_below_threshold_unknown():
     svc = make_service(threshold=0.8)
     breed, _ = svc.predict_breed_from_neighbors([Neighbor(path="1", breed="x", score=0.5)])
     assert breed == "unknown"
+
+
+def test_unknown_uses_best_neighbor():
+    svc = make_service(threshold=0.8)
+    neighbors = [Neighbor(path=str(i), breed=breed, score=score) for i, (breed, score)
+                 in enumerate([("x", 0.9), ("y", 0.6), ("y", 0.6)])]
+    assert svc.predict_breed_from_neighbors(neighbors) == ("y", 0.6)
+
+
+def test_index_replacement_and_failure(tmp_path):
+    import pytest
+    from lib.storage.embedding_store import EmbeddingStore
+
+    store = EmbeddingStore(tmp_path / "index.json")
+    record = rec("a", [1.0, 0.0])
+    store.replace([record])
+    store.replace([record])
+    assert store.all() == [record]
+
+    def incomplete():
+        yield rec("b", [0.0, 1.0])
+        raise ValueError("Imagen ilegible")
+
+    with pytest.raises(ValueError):
+        store.replace(incomplete())
+    assert store.all() == [record]

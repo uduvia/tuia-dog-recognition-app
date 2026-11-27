@@ -1,11 +1,9 @@
-"""Adaptador de los splits definitivos al BreedDataset y preprocess_bgr de la rama."""
+"""Adaptador de los splits definitivos al dataset compartido."""
 import random
 from pathlib import Path
-import cv2
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
 from lib.datasets import BreedDataset, basic_augment
 from lib.preprocessing import preprocess_bgr
 
@@ -32,6 +30,14 @@ def cargar_splits(dataset_path):
         raise ValueError('CSV requiere path, split y breed')
     if not set(df.split) <= {'train', 'valid', 'test', 'independent'}:
         raise ValueError('Split desconocido')
+    classes = set(df.loc[df.split == 'train', 'breed'])
+    if not classes or '' in classes:
+        raise ValueError("El manifiesto requiere razas de entrenamiento")
+    for split in ('valid', 'test'):
+        if set(df.loc[df.split == split, 'breed']) != classes:
+            raise ValueError(f"El split {split} debe cubrir todas las razas de train")
+    if not set(df.breed) <= classes:
+        raise ValueError("Hay razas fuera de train")
     paths = []
     for value in df.path:
         rel = Path(value)
@@ -53,13 +59,6 @@ def dataset_filas(dataset_path, filas, clases, image_size=224, train=False):
     ds = BreedDataset(samples, image_size, basic_augment if train else None)
     ds.filas = filas  # conserva orden para relacionar predicciones con rutas
     return ds
-
-
-def loader_split(dataset_path, split, clases, image_size=224, batch_size=32, seed=SEED):
-    df = cargar_splits(dataset_path)
-    ds = dataset_filas(dataset_path, df[df.split == split], clases, image_size, split == 'train')
-    return DataLoader(ds, batch_size=batch_size, shuffle=split == 'train', num_workers=0,
-                      generator=torch.Generator().manual_seed(seed))
 
 
 def rutas_galeria(dataset_path):

@@ -41,8 +41,14 @@ def revisar_independiente(data, folder, classes):
 def dhash(path):
     g=cv2.imread(str(path),cv2.IMREAD_GRAYSCALE)
     if g is None: raise ValueError(f'Imagen ilegible: {path}')
-    g=cv2.resize(g,(9,8),interpolation=cv2.INTER_AREA)
-    return int.from_bytes(np.packbits((g[:,1:]>g[:,:-1]).ravel()).tobytes(),'big')
+    return dhash_gray(g)
+
+
+def dhash_gray(gray):
+    small = cv2.resize(gray, (9, 8), interpolation=cv2.INTER_AREA)
+    bits = small[:, 1:] > small[:, :-1]
+    return int.from_bytes(np.packbits(bits.ravel()).tobytes(), 'big')
+
 
 def filtrar_independiente(data, main, ind, hash_dist=4):
     data=Path(data).resolve()

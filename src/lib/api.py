@@ -60,14 +60,7 @@ def _embedding_extractor(model_name: str):
         return similarity_service.extract_embedding
 
     def _extract(image: np.ndarray) -> list[float]:
-        # El modelo elegido vale solo para esta consulta: se restaura el activo para que
-        # /detect siga usando el modelo configurado.
-        previous = classifier_service.active_model_name
-        classifier_service.set_active_model(model_name)
-        try:
-            return classifier_service.extract_custom_embedding(image)
-        finally:
-            classifier_service.set_active_model(previous)
+        return classifier_service.extract_custom_embedding(image, model_name)
 
     return _extract
 
@@ -156,7 +149,7 @@ async def search(payload: SearchRequest, response: Response) -> AsyncTaskCreated
 async def classify(payload: ClassifyRequest, response: Response) -> AsyncTaskCreated:
     """Etapa 2: clasificacion supervisada de una imagen con el modelo entrenado."""
     response.status_code = status.HTTP_202_ACCEPTED
-    model_name = payload.model or "resnet18_finetuned"
+    model_name = payload.model or settings.classifier_model
     if model_name not in CLASSIFIER_MODELS:
         raise HTTPException(
             status_code=400,

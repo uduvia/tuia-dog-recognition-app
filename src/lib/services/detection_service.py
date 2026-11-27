@@ -16,15 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class DetectionService:
-    """Etapa 3: pipeline de deteccion y clasificacion.
-
-    Funciones a implementar por el estudiante:
-      - detect_dogs(image)
-      - classify_detected_dog(crop)
-
-    La orquestacion (predict: deteccion -> recorte -> clasificacion -> JSON)
-    ya esta provista.
-    """
+    """Detección de perros y clasificación de cada recorte."""
 
     def __init__(
         self,
@@ -60,7 +52,7 @@ class DetectionService:
         return image
 
     # ------------------------------------------------------------------
-    # Etapa 3: funciones a implementar
+    # Etapa 3: métodos del servicio
     # ------------------------------------------------------------------
 
     def detect_dogs(self, image: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
@@ -104,7 +96,7 @@ class DetectionService:
             logger.info("YOLO cargado: %s", self.yolo_model_name)
         return model
 
-    def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
+    def classify_detected_dog(self, crop: np.ndarray, model_name: str | None = None) -> tuple[str, float]:
         """
         Clasifica la raza del recorte de un perro detectado usando el modelo
         entrenado en la Etapa 2 (self.classifier.load_model()).
@@ -113,7 +105,7 @@ class DetectionService:
         """
         import torch  # import lazy
 
-        model = self.classifier.load_model()
+        model = self.classifier.load_model(model_name)
         tensor = preprocess_bgr(crop, self.classifier.image_size)[None, ...]  # 1xCxHxW float32
 
         if hasattr(model, "run"):  # onnxruntime.InferenceSession
@@ -155,15 +147,7 @@ class DetectionService:
         Escribe el resultado como JSON en `output_path` y retorna su ruta.
         """
         image = self._load_image(source_path)
-        # El modelo elegido vale solo para esta clasificacion: se restaura el activo para
-        # que /detect siga usando el modelo configurado.
-        previous = self.classifier.active_model_name
-        if model_name:
-            self.classifier.set_active_model(model_name)
-        try:
-            breed, score = self.classify_detected_dog(image)
-        finally:
-            self.classifier.set_active_model(previous)
+        breed, score = self.classify_detected_dog(image, model_name)
         payload = ClassifyResult(
             source_path=source_path,
             model=model_name or self.classifier.active_model_name,

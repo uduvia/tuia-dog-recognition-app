@@ -95,19 +95,19 @@ def _download_image(url: str | None) -> np.ndarray | None:
         return None
 
 
-def start_search(image: np.ndarray | None, model: str, top_k: float) -> tuple[str, str]:
+def start_search(image: np.ndarray | None, model: str | None, top_k: float | None) -> tuple[str, str]:
     try:
         path = upload_numpy_image(image)
         with _client() as c:
             r = c.post(
                 f"{API_BASE}/search",
-                json={"source_path": path, "model": model, "top_k": int(top_k)},
+                json={"source_path": path, "model": model, "top_k": int(top_k) if top_k is not None else None},
             )
             r.raise_for_status()
             job_id = r.json()["job_id"]
         msg = (
             f"Busqueda encolada. **job_id:** `{job_id}`\n\n"
-            f"Modelo de embeddings: `{model}` — Backend: `{API_BASE}`\n\n"
+            f"Modelo de embeddings: `{model or 'configurado'}` — Backend: `{API_BASE}`\n\n"
             "Pulsa **Consultar resultado de este job** o ve a **Estado y resultados**."
         )
         return job_id, msg
@@ -117,7 +117,7 @@ def start_search(image: np.ndarray | None, model: str, top_k: float) -> tuple[st
         return "", f"Error: {exc}"
 
 
-def start_classify(image: np.ndarray | None, model: str) -> tuple[str, str]:
+def start_classify(image: np.ndarray | None, model: str | None) -> tuple[str, str]:
     try:
         path = upload_numpy_image(image)
         with _client() as c:
@@ -129,7 +129,7 @@ def start_classify(image: np.ndarray | None, model: str) -> tuple[str, str]:
             job_id = r.json()["job_id"]
         msg = (
             f"Clasificacion encolada. **job_id:** `{job_id}`\n\n"
-            f"Modelo entrenado: `{model}`\n\n"
+            f"Modelo entrenado: `{model or 'configurado'}`\n\n"
             "Pulsa **Consultar resultado de este job** o ve a **Estado y resultados**."
         )
         return job_id, msg
@@ -293,10 +293,10 @@ def build_ui() -> gr.Blocks:
             search_in = gr.Image(label="Imagen de un perro", type="numpy", height=320)
             search_model = gr.Dropdown(
                 choices=MODEL_CHOICES,
-                value=MODEL_CHOICES[0] if MODEL_CHOICES else None,
+                value=None,
                 label="Modelo de embeddings",
             )
-            search_topk = gr.Slider(1, 20, value=10, step=1, label="Top K")
+            search_topk = gr.Number(value=None, minimum=1, precision=0, label="Top K (vacío: configuración del backend)")
             search_btn = gr.Button("Buscar similares", variant="primary")
             search_log = gr.Markdown()
             search_quick = gr.Button("Consultar resultado de este job")
@@ -310,7 +310,7 @@ def build_ui() -> gr.Blocks:
             cls_in = gr.Image(label="Imagen de un perro", type="numpy", height=320)
             cls_model = gr.Dropdown(
                 choices=CLASSIFIER_CHOICES,
-                value=CLASSIFIER_CHOICES[0],
+                value=None,
                 label="Modelo entrenado",
             )
             cls_btn = gr.Button("Clasificar", variant="primary")
@@ -335,7 +335,7 @@ def build_ui() -> gr.Blocks:
             extra_md = gr.Markdown()
 
         def _on_search(
-            img: np.ndarray | None, model: str, top_k: float
+            img: np.ndarray | None, model: str | None, top_k: float | None
         ) -> tuple[str, str, str, None, list, str]:
             jid, msg = start_search(img, model, top_k)
             return jid, msg, jid, None, [], ""

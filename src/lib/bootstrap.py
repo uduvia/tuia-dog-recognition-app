@@ -47,15 +47,25 @@ def build_store(settings: Settings) -> StoreType:
 
 
 def build_classifier(settings: Settings) -> ClassifierService:
-    return ClassifierService(
+    service = ClassifierService(
         checkpoints={
             "resnet18_finetuned": settings.model_path / settings.resnet18_model_name,
             "cnn_custom": settings.model_path / settings.cnn_custom_model_name,
         },
         image_size=settings.image_size,
+        active_model=settings.classifier_model,
         dataset_path=settings.dataset_path,
         output_path=settings.output_path,
     )
+    service.embedding_dim = settings.embedding_dim
+    service.train_config = dict(epochs=settings.train_epochs, batch_size=settings.train_batch_size,
+                                lr_head=settings.train_lr, lr_backbone=settings.backbone_lr,
+                                weight_decay=settings.train_weight_decay, patience=settings.train_patience,
+                                strategy=settings.resnet_strategy)
+    if settings.classifier_model not in service.checkpoints:
+        raise ValueError(f"CLASSIFIER_MODEL desconocido: {settings.classifier_model}")
+    service.cnn_dropout = settings.cnn_dropout
+    return service
 
 
 def build_similarity(

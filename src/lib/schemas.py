@@ -33,7 +33,7 @@ class SearchRequest(BaseModel):
         default=None,
         description="baseline | resnet18_finetuned | cnn_custom (default: EMBEDDING_MODEL).",
     )
-    top_k: Optional[int] = Field(default=None, description="Cantidad de vecinos (default: TOP_K).")
+    top_k: Optional[int] = Field(default=None, gt=0, description="Cantidad de vecinos (default: TOP_K).")
 
 
 class SearchResult(BaseModel):
@@ -51,7 +51,7 @@ class ClassifyRequest(BaseModel):
     source_path: str
     model: Optional[str] = Field(
         default=None,
-        description="resnet18_finetuned | cnn_custom (default: resnet18_finetuned).",
+        description="resnet18_finetuned | cnn_custom (default: CLASSIFIER_MODEL).",
     )
 
 

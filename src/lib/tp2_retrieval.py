@@ -7,7 +7,13 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import models
 from lib.tp2_data import dataset_filas
-from lib.tp2_training import features
+from lib.services.similarity_service import votar
+from lib.evaluation.metrics import ndcg_at_k
+
+def features(model, x):
+    vectors = model.embed(x) if hasattr(model, "embed") else model(x)
+    return nn.functional.normalize(vectors, dim=1)
+
 
 @torch.no_grad()
 def extraer_matriz(model, root, filas, clases, image_size=224, batch_size=32):
@@ -17,29 +23,16 @@ def extraer_matriz(model, root, filas, clases, image_size=224, batch_size=32):
     return np.concatenate([features(model,x.to(device)).cpu().numpy() for x,_ in loader])
 
 def baseline(device):
-    # features() toma avgpool antes de fc; se elimina fc también para representar el extractor.
+    # Al sustituir fc, el forward devuelve la salida del pooling global.
     model=models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
     model.fc=nn.Identity()
     return model.eval().to(device)
-
-def votar(razas, scores, threshold):
-    if not len(scores): return 'unknown',0.
-    # Contrato de test_similarity.py: suma de scores y media de la raza ganadora.
-    votos = Counter()
-    cantidades = Counter()
-    for raza, score in zip(razas, scores):
-        votos[raza] += float(score)
-        cantidades[raza] += 1
-    raza = max(votos, key=votos.get)  # empate: primer vecino de las razas empatadas
-    score = votos[raza] / cantidades[raza]
-    return (raza if max(scores) >= threshold else 'unknown'), float(score)
 
 def evaluar_busqueda(gallery, g_rows, queries, q_rows, metric='cosine', k=10, threshold=-1):
     if metric not in ('cosine','l2'): raise ValueError(metric)
     if k<=0 or not len(gallery): raise ValueError('k o galería inválidos')
     clases=g_rows.breed.to_numpy(); counts=Counter(clases)
     resultados=[]
-    descuentos=1/np.log2(np.arange(2,12))
     rows=list(q_rows.itertuples(index=False))
     for start in range(0,len(queries),64):
         matriz=np.clip(queries[start:start+64]@gallery.T,-1,1)
@@ -47,8 +40,7 @@ def evaluar_busqueda(gallery, g_rows, queries, q_rows, metric='cosine', k=10, th
         for scores,row in zip(scores_batch,rows[start:start+64]):
             order=np.argsort(-scores,kind='stable')[:max(k,10)]
             ids=order[:10]; rel=(clases[ids]==row.breed).astype(float)
-            ideal=descuentos[:min(10,counts[row.breed])].sum()
-            ndcg=float((rel*descuentos[:len(ids)]).sum()/ideal) if ideal else 0.
+            ndcg=ndcg_at_k(rel, k=10, n_relevant=counts[row.breed])
             voto=order[:k]; pred,score=votar(clases[voto],scores[voto],threshold)
             resultados.append(dict(path=row.path,breed=row.breed,pred=pred,score=score,
                                    best_score=float(scores[order[0]]),ndcg=ndcg,precision10=float(rel.sum()/10),
@@ -61,9 +53,7 @@ def resumen_busqueda(df):
             'accuracy':df.correct.mean(),'coverage':(df.pred!='unknown').mean()}
 
 def calibrar(gallery,g_rows,queries,q_rows,metric):
-    """Validación de razas conocidas: maximizar aciertos contando rechazo como error.
-    Sin negativos de validación no es calibración de open-set. Se reporta cobertura.
-    """
+    """Elige K y umbral por accuracy entre aceptadas con cobertura mínima del 90 % en validación."""
     base=evaluar_busqueda(gallery,g_rows,queries,q_rows,metric,20,-1)
     thresholds=np.unique(np.r_[(-1 if metric=='cosine' else 0),np.quantile(base.best_score,np.linspace(0,1,11))])
     filas=[]
@@ -73,6 +63,10 @@ def calibrar(gallery,g_rows,queries,q_rows,metric):
         correct=np.asarray(preds)==base.breed.to_numpy()
         for t in thresholds:
             accepted=base.best_score>=t
-            filas.append(dict(k=k,threshold=float(t),accuracy=float((correct&accepted).mean()),coverage=float(accepted.mean()),ndcg=base.ndcg.mean()))
-    tabla=pd.DataFrame(filas).sort_values(['accuracy','coverage','threshold','k'],ascending=[False,False,False,True])
-    return tabla,tabla.iloc[0].to_dict()
+            filas.append(dict(k=k,threshold=float(t),accuracy=float((correct&accepted).mean()),coverage=float(accepted.mean()),accuracy_accepted=float(correct[accepted].mean()),ndcg=base.ndcg.mean()))
+    tabla = pd.DataFrame(filas)
+    # Con razas conocidas se admite hasta un 10 % de rechazos en validación.
+    elegibles = tabla[tabla.coverage >= 0.90]
+    best = elegibles.sort_values(["accuracy_accepted", "coverage", "k", "threshold"],
+                                 ascending=[False, False, True, True]).iloc[0]
+    return tabla, best.to_dict()
