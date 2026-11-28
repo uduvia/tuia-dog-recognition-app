@@ -1,6 +1,6 @@
 # TP2 - Sistema de Detección y Clasificación de Razas de Perros
 
-Plantilla base para desarrollar un pipeline completo de Computer Vision:
+Sistema de reconocimiento de razas con tres etapas:
 
 **Embeddings → Búsqueda por similitud → Clasificación → Detección → Pipeline completo**
 
@@ -52,9 +52,9 @@ tuia-dog-recognition-app/
 │       ├── visualization/
 │       │   └── draw.py          # Dibujo de bounding boxes
 │       ├── services/
-│       │   ├── similarity_service.py   # ⚠️ Etapa 1: funciones a implementar
-│       │   ├── classifier_service.py   # ⚠️ Etapa 2: funciones a implementar
-│       │   ├── detection_service.py    # ⚠️ Etapa 3: funciones a implementar
+│       │   ├── similarity_service.py   # Extracción y búsqueda de embeddings
+│       │   ├── classifier_service.py   # Entrenamiento y evaluación
+│       │   ├── detection_service.py    # Detección YOLO y clasificación
 │       │   └── task_manager.py
 │       └── storage/
 │           ├── base.py
@@ -90,17 +90,19 @@ tuia-dog-recognition-app/
 
 Dataset principal: [70 Dog Breeds Image Dataset (Kaggle)](https://www.kaggle.com/datasets/gpiosenka/70-dog-breedsimage-data-set).
 
+Datos del grupo: [carpeta de distribución del TP](https://github.com/laureanodiez/computervision/tree/main/tuia-dog-recognition-app/data). La descarga del grupo debe conservar la estructura de `data/dataset/`, con el conjunto independiente, sus metadatos, las escenas de detección y el archivo `splits_finales.csv`.
+
 ```bash
 python scripts/download_dataset.py
 ```
 
-Requiere [credenciales de Kaggle](https://www.kaggle.com/docs/api) configuradas. Si no las tienen, descarguen el dataset manualmente desde Kaggle y descompriman `train/`, `valid/` y `test/` dentro de `data/dataset`.
+Si Kaggle solicita autenticación, usá las credenciales de tu cuenta. Si no las tenés, descargá el dataset desde Kaggle y descomprimí `train/`, `valid/` y `test/` dentro de `data/dataset`.
 
 ## Configurá tus modelos
 
 Entrená tus modelos (Etapa 2) con `2-train.ipynb` (en Google Colab, con GPU) y guardá los checkpoints dentro de la carpeta `models`. El backend admite modelos con extensión **.pth** (PyTorch, se carga con `torch.load` el modelo completo) o **.onnx** (se carga con `onnxruntime`). Si usan otro framework, expórtenlo a **.onnx**.
 
-Recordá actualizar la configuración del `.env` correspondiente (`RESNET18_MODEL_NAME`, `CNN_CUSTOM_MODEL_NAME`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `SIMILARITY_THRESHOLD`) para que apunte a tus modelos.
+Actualizá la configuración del `.env` correspondiente (`RESNET18_MODEL_NAME`, `CNN_CUSTOM_MODEL_NAME`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `SIMILARITY_THRESHOLD`) para que apunte a tus modelos.
 
 > El backend arranca aunque falten los checkpoints: `/health` informa cuáles encuentra en `models/`. Las pestañas de las Etapas 2 y 3 fallan hasta que existan.
 
@@ -120,6 +122,8 @@ Ajustá el archivo **.env.docker.example** a tus necesidades. Luego corré desde
 docker compose build
 docker compose up -d
 ```
+
+El backend usa PyTorch para CPU dentro de Docker. El entrenamiento en un kernel con CUDA usa la instalación de PyTorch de ese kernel. En redes que inspeccionan HTTPS, BuildKit admite el secreto opcional `pip_ca` con las raíces públicas de confianza en formato PEM durante la instalación de dependencias.
 
 Servicios disponibles: frontend en `http://localhost:8080`, backend en `http://localhost:8000` y PostgreSQL en `localhost:5432`.
 
@@ -278,73 +282,43 @@ No hardcodeen parámetros: configúrenlos mediante `.env`.
 - Funciones auxiliares de evaluación (`lib/evaluation/metrics.py`) y de visualización (`lib/visualization/draw.py`).
 - Frontend Gradio con una pestaña por etapa: Etapa 1 (imagen consultada, Top-K similares, raza predicha y selección de modelo), Etapa 2 (raza y score con el modelo entrenado) y Etapa 3 (bounding boxes, razas y scores).
 
-### A implementar por el grupo
+## Datos y reproducibilidad
 
-Estas funciones hoy lanzan `NotImplementedError`:
+1. Desde la raíz, ejecutar `python scripts/download_dataset.py`. Los datos se organizan por raza en `data/dataset/{train,valid,test}`.
+2. Colocar las imágenes independientes y su `metadata.csv` en `data/dataset/independent/`. Si el conjunto verificado está en otra carpeta del dataset, indicar su nombre con `INDEPENDENT_DIR`. El CSV registra selección, carpeta de raza, ruta local, página original, autor y licencia.
+3. Ejecutar `1-pre-processing.ipynb` desde la raíz. Produce `data/dataset/splits_finales.csv` con rutas relativas, raza y split. La galería, los clasificadores y la evaluación leen el mismo archivo. La consulta del historial de candidatas es opcional.
+4. Ejecutar `2-train.ipynb` con ese manifiesto. Para la evaluación del detector, colocar `data/dataset/independent_scenes.csv` con las columnas `path,kind,expected_dogs,source_url,license` y los archivos correspondientes. Incluir escenas de un perro, varios perros, escenas complejas y sin perros.
+5. Los checkpoints completos van en `models/`. La configuración seleccionada por validación se escribe en `output/config_recomendada.json`. Trasladar los valores a ambos archivos de entorno, incluido `CLASSIFIER_MODEL`, y reconstruir la galería. El modelo de consulta debe coincidir con el del índice.
+6. Verificar las tres pestañas en Gradio y el estado de cada operación en `/status/{job_id}`. Para correr las pruebas locales, instalar `pytest` en el entorno del proyecto y ejecutar `python -m pytest -q` desde la raíz.
 
-| Etapa | Función | Archivo |
-|-------|---------|---------|
-| 1 | `extract_embedding(image)` | `src/lib/services/similarity_service.py` |
-| 1 | `search_similar_images(embedding, top_k)` | `src/lib/services/similarity_service.py` |
-| 1 | `predict_breed_from_neighbors(results)` | `src/lib/services/similarity_service.py` |
-| 2 | `train_classifier()` | `src/lib/services/classifier_service.py` |
-| 2 | `evaluate_classifier()` | `src/lib/services/classifier_service.py` |
-| 2 | `extract_custom_embedding(image)` | `src/lib/services/classifier_service.py` |
-| 3 | `detect_dogs(image)` | `src/lib/services/detection_service.py` |
-| 3 | `classify_detected_dog(crop)` | `src/lib/services/detection_service.py` |
+## Resultados guardados
 
-En las Etapas 1 y 3 el trabajo se limita a completar las funciones. En la Etapa 2, además, el grupo entrena sus propios modelos (Modelo A: fine-tuning de ResNet18/ResNet50; Modelo B: CNN propia, **ambos obligatorios**) y hace un estudio de resultados.
+La primera notebook registra 9.346 imágenes de 70 razas antes del filtrado. De las 809 descartadas, 767 corresponden a la regla de duplicados, 5 a desenfoque y 37 a exposición, contando una sola causa por imagen. Los pares con alta similitud semántica requieren revisión visual porque distintas fotos de una misma raza pueden parecerse.
 
-Ver el contrato de cada función, recomendaciones y errores frecuentes en [ENUNCIADO.md](ENUNCIADO.md#24-funciones-a-implementar).
+| Split | Imágenes | Razas |
+|---|---:|---:|
+| Train | 7.182 | 70 |
+| Valid | 666 | 70 |
+| Test | 689 | 70 |
+| Independiente | 163 | 21 |
 
-### Orden de trabajo sugerido
+La ficha del dataset principal en Kaggle declara CC0 (consulta del 27/11/2026). La selección independiente contiene 184 fotos de 23 razas. Se mapearon las etiquetas Yorkshire Terrier a Yorkie y se separaron 18 fotos de razas ausentes en Kaggle, dos escenas para detección y una imagen de un par marcado por dHash. Las 163 consultas finales cubren 21 razas. Las 74 filas sin autor consignado en ese manifiesto figuran como CC0. La sección 8 del primer notebook genera el manifiesto de escenas y añade una foto de gato con licencia CC0 como control sin perros.
 
-1. `1-pre-processing.ipynb`: EDA, filtrado, conjunto independiente, preprocesamiento, augmentation y splits.
-2. Etapa 1 en `similarity_service.py`. Indexá la galería con `python scripts/build_index.py --split train` y probá la pestaña de la Etapa 1.
-3. Etapa 2 en `classifier_service.py`, entrenando y comparando los modelos con `2-train.ipynb`. Descargá los checkpoints a `models/`.
-4. Etapa 3 en `detection_service.py` y validación end-to-end con `docker compose up`.
+## Modelos
 
-## Notebooks
+Descargá `resnet18_finetuned.pth` y `cnn_custom.pth` desde la [carpeta de modelos del grupo](https://github.com/laureanodiez/computervision/tree/main/tuia-dog-recognition-app/models) y colocá ambos archivos directamente en `models/` antes de levantar Docker.
 
-| Notebook | Contenido |
-|----------|-----------|
-| `1-pre-processing.ipynb` | Dataset, EDA, control de calidad, conjunto independiente, preprocesamiento, data augmentation y splits |
-| `2-train.ipynb` | Evaluación de la búsqueda (NDCG@10), entrenamiento del Modelo A y del Modelo B, métricas, análisis de errores, comparación y exportación de checkpoints |
+La búsqueda inicial usa las 512 características de ResNet18 ImageNet después del pooling global. La clasificación compara ResNet18 con backbone congelado o ajuste completo y una CNN de cuatro bloques convolucionales con BatchNorm, pooling global y una capa de embedding. Los dos modelos guardan el orden de las razas en el checkpoint. El preprocesamiento compartido convierte BGR a RGB, redimensiona y normaliza con las estadísticas de ImageNet. La rotación, el flip horizontal, los cambios de brillo y contraste, el desenfoque y el ruido se aplican en entrenamiento.
 
-Se pueden entregar commiteadas en el repositorio o en Google Colab, con el link a la notebook de Colab en una celda Markdown al inicio de la notebook del repositorio. En ambos casos deben estar **ejecutadas y con las salidas visibles**: una notebook sin salidas se considera **no entregada** (ver [ENUNCIADO.md](ENUNCIADO.md#82-notebooks-repositorio-o-google-colab)).
+La ResNet18 de ajuste completo obtuvo 87,8 % de accuracy en validación, 85,9 % en test y 47,9 % en el independiente. La CNN propia obtuvo 26,1 % en test y 8,6 % en el independiente. La búsqueda usa embeddings de ResNet18 de 512 componentes, L2 y 20 vecinos para el voto. El NDCG@10 fue 0,795 en test y 0,458 en el independiente. El umbral de similitud elegido fue cero. El clasificador trabaja con imágenes de 96 × 96 y YOLOv8n usa un umbral de 0,25. Los checkpoints finales son `models/resnet18_finetuned.pth` y `models/cnn_custom.pth`.
 
-## Dataset
-
-Documentar en la entrega final:
-
-- Splits utilizados y cantidad de imágenes por raza en cada uno
-- Reglas de filtrado y calidad, con la cantidad de imágenes descartadas por regla
-- Conjunto independiente de evaluación: fuente, licencia, razas e imágenes por raza, y link de descarga
-- Preprocesamiento y data augmentation aplicados
-
-## Modelos y entrenamiento
-
-Completar en la entrega final:
-
-- Modelo de embeddings baseline (Etapa 1) y justificación
-- Modelo A (fine-tuning) y Modelo B (CNN propia): arquitectura, estrategia y justificación
-- Hiperparámetros y proceso de entrenamiento
-- Detector YOLO utilizado y `YOLO_CONF_THRESHOLD` elegido
-- Umbral de similitud elegido y cómo se calibró
-- Links públicos de descarga de los checkpoints
-
-## Resultados
-
-Completar en la entrega final:
-
-- Etapa 1: NDCG@10 por modelo de embeddings, sobre `test` y sobre el conjunto independiente
-- Etapa 2: accuracy, precision, recall, specificity y F1 de ambos modelos, y matriz de confusión
-- Comparación entre enfoques (búsqueda por similitud vs. clasificación supervisada; fine-tuning vs. CNN propia)
-- Análisis de errores (falsos positivos y falsos negativos)
+Los cuatro experimentos usaron cuatro épocas, lotes de 32 y semilla 42. Se optimizó la entropía cruzada con AdamW, regularización de pesos de 0,0001 y label smoothing de 0,1. En ResNet se comparó congelar el backbone con ajustarlo usando una tasa inicial de 0,0001 para el backbone y 0,001 para la cabeza. En la CNN se compararon valores de dropout de 0,3 y 0,5. Para cada corrida se conservó la época con mayor accuracy de validación.
 
 ## Problemas encontrados y soluciones
 
-Completar en la entrega final.
+- La enumeración directa de carpetas reincorporaba imágenes descartadas. Entrenamiento, evaluación e indexación leen las rutas de `splits_finales.csv`.
+- Repetir la indexación agregaba vecinos duplicados. El script reemplaza la galería y el buscador comprueba que el extractor de consulta coincida con el del índice.
+- El backend en Docker intentaba conectarse a PostgreSQL en localhost. Compose carga el entorno del contenedor con el host `postgres` y verifica la disponibilidad de la API en `/health`.
 
 ## Notas importantes
 

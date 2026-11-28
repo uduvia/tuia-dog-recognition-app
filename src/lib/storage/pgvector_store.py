@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Iterable
 
 from pgvector.psycopg import register_vector
 from psycopg import connect
@@ -110,6 +111,13 @@ class PgVectorEmbeddingStore:
                     json.dumps(record.metadata, ensure_ascii=True),
                 ),
             )
+
+    def replace(self, records: Iterable[EmbeddingRecord]) -> None:
+        with self.conn.transaction():
+            self.conn.execute("LOCK TABLE embeddings IN SHARE ROW EXCLUSIVE MODE")
+            self.conn.execute("DELETE FROM embeddings")
+            for record in records:
+                self.append(record)
 
     def search(self, query: list[float], k: int = 10) -> list[EmbeddingRecord]:
         """Top-k vecinos por distancia coseno (operador <=> de pgvector)."""

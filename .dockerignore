@@ -6,3 +6,7 @@ models
 data/dataset
 runs
 *.ipynb
+src/.env
+src/data
+src/output
+src/models

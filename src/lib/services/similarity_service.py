@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import json
 import logging
 from pathlib import Path
@@ -9,23 +10,26 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+from lib.preprocessing import l2_normalize, preprocess_bgr
 from lib.schemas import EmbeddingRecord, Neighbor, SearchResult
 from lib.storage.base import EmbeddingStoreProtocol
 
 logger = logging.getLogger(__name__)
 
 
+def votar(razas, scores, threshold):
+    if not len(scores): return 'unknown',0.
+    votos = Counter()
+    cantidades = Counter()
+    for raza, score in zip(razas, scores):
+        votos[raza] += float(score)
+        cantidades[raza] += 1
+    raza = max(votos, key=votos.get)  # empate: primer vecino de las razas empatadas
+    score = votos[raza] / cantidades[raza]
+    return (raza if max(scores) >= threshold else 'unknown'), float(score)
+
 class SimilarityService:
-    """Etapa 1: buscador de imagenes por similitud.
-
-    Funciones a implementar por el estudiante:
-      - extract_embedding(image)
-      - search_similar_images(embedding, top_k)
-      - predict_breed_from_neighbors(results)
-
-    La orquestacion (search, index_image, persistencia y metricas de similitud)
-    ya esta provista y no debe modificarse sin justificarlo en el Pull Request.
-    """
+    """Búsqueda por similitud sobre la galería de entrenamiento."""
 
     def __init__(
         self,
@@ -57,7 +61,7 @@ class SimilarityService:
         return image
 
     # ------------------------------------------------------------------
-    # Etapa 1: funciones a implementar
+    # Etapa 1: extracción, búsqueda y voto
     # ------------------------------------------------------------------
 
     def extract_embedding(self, image: np.ndarray) -> list[float]:
@@ -72,9 +76,29 @@ class SimilarityService:
           - Recordar que la imagen llega en BGR (OpenCV).
         Retorna una lista de floats de dimension EMBEDDING_DIM.
         """
-        raise NotImplementedError("Etapa 1: implementar extract_embedding")
+        import torch  # import lazy: los tests de logica no requieren torch
 
-    def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
+        model = self._get_baseline_model()
+        tensor = torch.from_numpy(preprocess_bgr(image, self.image_size)).unsqueeze(0)
+        with torch.no_grad():
+            emb = model(tensor).squeeze(0).cpu().numpy()
+        return l2_normalize(emb).astype(float).tolist()
+
+    def _get_baseline_model(self):
+        """ResNet18 preentrenada en ImageNet sin la capa fc (embedding de 512). Se carga una sola vez."""
+        model = getattr(self, "_baseline_model", None)
+        if model is None:
+            import torch.nn as nn
+            from torchvision.models import ResNet18_Weights, resnet18
+
+            model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+            model.fc = nn.Identity()
+            model.eval()
+            self._baseline_model = model
+            logger.info("Baseline ResNet18 (ImageNet) cargada para embeddings")
+        return model
+
+    def search_similar_images(self, embedding: list[float], top_k: int, model_name: str | None = None) -> list[Neighbor]:
         """
         Recupera de la base vectorial las top_k imagenes mas similares.
 
@@ -85,7 +109,21 @@ class SimilarityService:
         Retorna una lista de Neighbor (path, breed, score) ordenada por score
         descendente.
         """
-        raise NotImplementedError("Etapa 1: implementar search_similar_images")
+        # Con embeddings normalizados L2, el orden por coseno y por L2 coincide; igual se
+        # recalcula el score con self.similarity (respeta SIMILARITY_METRIC) y se reordena.
+        if hasattr(self.store, "search"):
+            records = self.store.search(embedding, top_k)
+        else:
+            records = self.store.all()
+        expected = model_name or self.model_name
+        if any(r.metadata.get("model", "baseline") != expected for r in records):
+            raise ValueError(f"La galería corresponde a otro extractor. Reindexar con {expected}.")
+        neighbors = [
+            Neighbor(path=r.path, breed=r.breed, score=self.similarity(embedding, r.embedding))
+            for r in records
+        ]
+        neighbors.sort(key=lambda n: n.score, reverse=True)
+        return neighbors[:top_k]
 
     def predict_breed_from_neighbors(self, results: list[Neighbor]) -> tuple[str, float]:
         """
@@ -95,7 +133,7 @@ class SimilarityService:
         Si el mejor score esta por debajo de self.similarity_threshold se
         considera "unknown". Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 1: implementar predict_breed_from_neighbors")
+        return votar([n.breed for n in results], [n.score for n in results], self.similarity_threshold)
 
     # ------------------------------------------------------------------
     # Helpers de similitud provistos
@@ -142,7 +180,7 @@ class SimilarityService:
             return path
         return candidate
 
-    def index_image(
+    def image_record(
         self, image_path: str, breed: str, metadata: dict[str, object] | None = None
     ) -> EmbeddingRecord:
         """Extrae el embedding de una imagen del dataset y lo persiste en la base vectorial.
@@ -152,13 +190,15 @@ class SimilarityService:
         """
         image = self._load_image(image_path)
         embedding = self.extract_embedding(image)
-        record = EmbeddingRecord(
+        return EmbeddingRecord(
             id_imagen=str(uuid4()),
             embedding=embedding,
             path=self._to_stored_path(image_path),
             breed=breed,
             metadata=metadata or {},
         )
+    def index_image(self, image_path: str, breed: str, metadata: dict[str, object] | None = None) -> EmbeddingRecord:
+        record = self.image_record(image_path, breed, metadata)
         self.store.append(record)
         return record
 
@@ -186,7 +226,7 @@ class SimilarityService:
         embedding = extractor(image)
 
         k = int(top_k) if top_k else self.top_k
-        neighbors = [self._with_url(n) for n in self.search_similar_images(embedding, k)]
+        neighbors = [self._with_url(n) for n in self.search_similar_images(embedding, k, model_name)]
         breed, score = self.predict_breed_from_neighbors(neighbors)
         logger.info("Predicted breed: %s (score=%.4f) for %s", breed, score, source_path)
 

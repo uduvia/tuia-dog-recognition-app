@@ -8,6 +8,7 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+from lib.preprocessing import preprocess_bgr
 from lib.schemas import ClassifyResult, DetectResult, DogDetection
 from lib.services.classifier_service import ClassifierService
 
@@ -15,15 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class DetectionService:
-    """Etapa 3: pipeline de deteccion y clasificacion.
-
-    Funciones a implementar por el estudiante:
-      - detect_dogs(image)
-      - classify_detected_dog(crop)
-
-    La orquestacion (predict: deteccion -> recorte -> clasificacion -> JSON)
-    ya esta provista.
-    """
+    """Detección de perros y clasificación de cada recorte."""
 
     def __init__(
         self,
@@ -59,7 +52,7 @@ class DetectionService:
         return image
 
     # ------------------------------------------------------------------
-    # Etapa 3: funciones a implementar
+    # Etapa 3: métodos del servicio
     # ------------------------------------------------------------------
 
     def detect_dogs(self, image: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
@@ -75,16 +68,70 @@ class DetectionService:
 
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        model = self._get_yolo()
+        # ultralytics asume BGR cuando recibe un np.ndarray (igual que cv2.imread).
+        results = model.predict(
+            image,
+            conf=self.conf_threshold,
+            classes=[self.dog_class_id],
+            verbose=False,
+        )
+        height, width = image.shape[:2]
+        detections: list[tuple[tuple[int, int, int, int], float]] = []
+        for box in results[0].boxes:
+            x1, y1, x2, y2 = (int(round(v)) for v in box.xyxy[0].tolist())
+            x1, y1, x2, y2 = self._clip_xyxy(x1, y1, x2, y2, height, width)
+            detections.append(((x1, y1, x2, y2), float(box.conf[0])))
+        detections.sort(key=lambda d: d[1], reverse=True)
+        return detections
 
-    def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
+    def _get_yolo(self):
+        """Carga YOLO una sola vez (los pesos se descargan en el primer uso)."""
+        model = getattr(self, "_yolo", None)
+        if model is None:
+            from ultralytics import YOLO  # import lazy
+
+            model = YOLO(self.yolo_model_name)
+            self._yolo = model
+            logger.info("YOLO cargado: %s", self.yolo_model_name)
+        return model
+
+    def classify_detected_dog(self, crop: np.ndarray, model_name: str | None = None) -> tuple[str, float]:
         """
         Clasifica la raza del recorte de un perro detectado usando el modelo
         entrenado en la Etapa 2 (self.classifier.load_model()).
 
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        import torch  # import lazy
+
+        model = self.classifier.load_model(model_name)
+        tensor = preprocess_bgr(crop, self.classifier.image_size)[None, ...]  # 1xCxHxW float32
+
+        if hasattr(model, "run"):  # onnxruntime.InferenceSession
+            input_name = model.get_inputs()[0].name
+            logits = np.asarray(model.run(None, {input_name: tensor})[0])[0]
+            class_names = self._onnx_class_names(model)
+        else:  # modelo PyTorch completo (.pth)
+            model.eval()
+            with torch.no_grad():
+                logits = model(torch.from_numpy(tensor))[0].cpu().numpy()
+            class_names = list(getattr(model, "class_names", []))
+
+        if not class_names:
+            raise ValueError(
+                "El modelo no trae la lista de razas (atributo 'class_names' o metadata ONNX 'class_names')"
+            )
+        # softmax estable
+        exp = np.exp(logits - np.max(logits))
+        probs = exp / exp.sum()
+        idx = int(np.argmax(probs))
+        return str(class_names[idx]), float(probs[idx])
+
+    @staticmethod
+    def _onnx_class_names(session) -> list[str]:
+        raw = session.get_modelmeta().custom_metadata_map.get("class_names", "")
+        return json.loads(raw) if raw else []
 
     # ------------------------------------------------------------------
     # Orquestacion provista
@@ -100,15 +147,7 @@ class DetectionService:
         Escribe el resultado como JSON en `output_path` y retorna su ruta.
         """
         image = self._load_image(source_path)
-        # El modelo elegido vale solo para esta clasificacion: se restaura el activo para
-        # que /detect siga usando el modelo configurado.
-        previous = self.classifier.active_model_name
-        if model_name:
-            self.classifier.set_active_model(model_name)
-        try:
-            breed, score = self.classify_detected_dog(image)
-        finally:
-            self.classifier.set_active_model(previous)
+        breed, score = self.classify_detected_dog(image, model_name)
         payload = ClassifyResult(
             source_path=source_path,
             model=model_name or self.classifier.active_model_name,
