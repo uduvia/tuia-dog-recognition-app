@@ -96,7 +96,7 @@ Datos del grupo: [carpeta de distribución del TP](https://github.com/laureanodi
 python scripts/download_dataset.py
 ```
 
-Si Kaggle solicita autenticación, usá las credenciales de tu cuenta. Si no las tienen, descarguen el dataset manualmente desde Kaggle y descompriman `train/`, `valid/` y `test/` dentro de `data/dataset`.
+Si Kaggle solicita autenticación, usá las credenciales de tu cuenta. Si no las tenés, descargá el dataset desde Kaggle y descomprimí `train/`, `valid/` y `test/` dentro de `data/dataset`.
 
 ## Configurá tus modelos
 
